@@ -10,13 +10,21 @@ use mdbook::preprocess::{Preprocessor, PreprocessorContext};
 pub struct PathProcessor;
 
 #[derive(Debug, Eq, PartialEq)]
-pub enum PathError {
-    ChapterNotFound(String)
+pub enum ProcessorError {
+    // Tried to provide path to the given chapter, but couldn't find one.
+    ChapterNotFound(String),
+    // Duplicate chapter names found. Only an issue when strict mode is on.
+    DuplicateChapterNames(String)
 }
 
 struct FileLink<'a> {
     name: &'a str,
     anchor: Option<&'a str>
+}
+
+struct PathProcessorOptions {
+    site_path: String,
+    strict_mode: bool
 }
 
 impl FileLink<'_> {
@@ -37,18 +45,16 @@ impl FileLink<'_> {
 }
 
 impl Preprocessor for PathProcessor {
-    fn name(&self) -> &str { "universal-path" }
+    fn name(&self) -> &str { "chapter-path" }
 
     fn run(&self, ctx: &PreprocessorContext, mut book: Book) -> Result<Book, Error> {
-        let known_chapters = self.chapter_names(&book);
+        let options = self.process_options(ctx);
 
-        let site_path = self.site_path(ctx);
-
-        eprintln!("site path is: {}", site_path);
+        let known_chapters = self.chapter_names(&book, &options).unwrap();
 
         book.for_each_mut(|item| {
             if let BookItem::Chapter(chapter) = item {
-                chapter.content = self.process_chapter(&chapter.content, &known_chapters, &site_path).unwrap();
+                chapter.content = self.process_chapter(&chapter.content, &known_chapters, &options).unwrap();
             }
         });
         Ok(book)
@@ -58,7 +64,8 @@ impl Preprocessor for PathProcessor {
 }
 
 impl PathProcessor {
-    fn site_path(&self, ctx: &PreprocessorContext) -> String {
+    fn process_options(&self, ctx: &PreprocessorContext) -> PathProcessorOptions {
+        // process site_path
         let mut site_path: String = "/".to_string();
         if let Some(config) = ctx.config.get("output.html") {
             if let Some(toml::value::Value::String(value)) = config.get("site-url") {
@@ -70,26 +77,40 @@ impl PathProcessor {
             site_path.push_str("/");
         }
 
-        site_path
+        let mut strict_mode = false;
+        if let Some(config) = ctx.config.get_preprocessor("chapter-path") {
+            if let Some(toml::value::Value::Boolean(value)) = config.get("strict") {
+                strict_mode = *value;
+            }
+        }
+
+        PathProcessorOptions {
+            site_path,
+            strict_mode
+        }
     }
 
-    fn chapter_names(&self, book: &Book) -> HashMap<String, PathBuf> {
+    fn chapter_names(&self, book: &Book, options: &PathProcessorOptions) -> Result<HashMap<String, PathBuf>, ProcessorError>{
         let mut mapping: HashMap<String, PathBuf> = HashMap::new();
 
-        book.iter().for_each(|item| {
+        for item in book.iter() {
             if let BookItem::Chapter(chapter) = item {
                 if let Option::Some(path) = &chapter.path {
                     if let Some(existing_path) = mapping.get(&chapter.name.to_lowercase()) {
-                        eprintln!("Warning: Found duplicate chapter name {} at {} (existing chapter at {})", chapter.name, path.to_str().unwrap(), existing_path.to_str().unwrap());
+                        if options.strict_mode {
+                            return Err(ProcessorError::DuplicateChapterNames(chapter.name.to_lowercase()));
+                        } else {
+                            eprintln!("Warning: Found duplicate chapter name {} at {} (existing chapter at {})", chapter.name, path.to_str().unwrap(), existing_path.to_str().unwrap());
+                        }
                     }
                     mapping.insert(chapter.name.to_lowercase(), path.to_path_buf());
                 }
             }
-        });
-        mapping
+        };
+        Ok(mapping)
     }
 
-    fn process_chapter(&self, content: &str, chapter_names: &HashMap<String, PathBuf>, site_path: &str) -> Result<String, PathError> {
+    fn process_chapter(&self, content: &str, chapter_names: &HashMap<String, PathBuf>, options: &PathProcessorOptions) -> Result<String, ProcessorError> {
         let regex = Regex::new(r"\{\{#path_for (?P<file>.+?)}}").unwrap();
 
         let captures: Vec<Captures> = regex.captures_iter(&content).collect();
@@ -107,7 +128,7 @@ impl PathProcessor {
                     processed_content.push_str(&content[last_endpoint..full_match.start()]);
                     last_endpoint = full_match.end();
 
-                    processed_content.push_str(site_path);
+                    processed_content.push_str(options.site_path.as_str());
                     processed_content.push_str(path.to_str().unwrap());
                     if let Some(anchor) = file_link.anchor {
                         processed_content.push_str("#");
@@ -115,7 +136,7 @@ impl PathProcessor {
                     }
                 } else {
                     eprintln!("Error: Found request to replace link with '{}', but no chapter with that name found.", file_link.name.to_lowercase());
-                    return Err(PathError::ChapterNotFound(file_link.name.to_lowercase()));
+                    return Err(ProcessorError::ChapterNotFound(file_link.name.to_lowercase()));
                 }
             }
         }
@@ -132,7 +153,7 @@ impl PathProcessor {
 mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
-    use crate::PathProcessor;
+    use crate::{PathProcessor, PathProcessorOptions};
 
     #[test]
     fn test_process_chapter_replaces_links_to_top_level() {
@@ -143,7 +164,7 @@ mod tests {
 
         let subject = PathProcessor;
 
-        let received_chapter = subject.process_chapter(&content, &chapter_mapping, "/").unwrap();
+        let received_chapter = subject.process_chapter(&content, &chapter_mapping, &processor_options("/")).unwrap();
 
         let expected_chapter = "[foo](/something/Foo.md)";
 
@@ -159,10 +180,17 @@ mod tests {
 
         let subject = PathProcessor;
 
-        let received_chapter = subject.process_chapter(&content, &chapter_mapping, "/root/").unwrap();
+        let received_chapter = subject.process_chapter(&content, &chapter_mapping, &processor_options("/root/")).unwrap();
 
         let expected_chapter = "[foo](/root/something/Foo.md#bar)";
 
         assert_eq!(received_chapter, expected_chapter.to_string());
+    }
+
+    fn processor_options(site_path: &str) -> PathProcessorOptions {
+        PathProcessorOptions {
+            site_path: site_path.to_string(),
+            strict_mode: false
+        }
     }
 }
