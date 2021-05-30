@@ -1,6 +1,8 @@
 # mdbook-chapter-path
 
-![[CI status](https://ci.younata.com/teams/main/pipelines/knowledge/jobs/mdbook-chapter-path/)](https://ci.younata.com/api/v1/pipelines/knowledge/jobs/mdbook-chapter-path/badge)
+[![CI status](https://ci.younata.com/api/v1/pipelines/knowledge/jobs/mdbook-chapter-path/badge)](https://ci.younata.com/teams/main/pipelines/knowledge/jobs/mdbook-chapter-path/)
+[![Latest Version](https://img.shields.io/crates/v/mdbook-chapter-path.svg)](https://crates.io/crates/mdbook-chapter-path)
+
 
 [mdBook](https://github.com/rust-lang/mdbook) preprocessor for providing the path to a chapter based on its name.
 
